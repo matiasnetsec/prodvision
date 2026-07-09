@@ -1,0 +1,6 @@
+node_modules/
+prodvision.db
+prodvision.db-shm
+prodvision.db-wal
+.gitignore
+*.log
