@@ -1,70 +1,78 @@
 const express = require('express');
-const Database = require('better-sqlite3');
+const { Pool } = require('pg');
 const path = require('path');
 const cors = require('cors');
 
 const app = express();
-const PORT = 5500;
+const PORT = process.env.PORT || 5500;
 
-const db = new Database('prodvision.db');
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/prodvision',
+});
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS maquinas (
-    id TEXT PRIMARY KEY,
-    nome TEXT NOT NULL,
-    status TEXT DEFAULT 'parada',
-    statusChangedAt INTEGER DEFAULT 0,
-    velocidadeProgramada TEXT DEFAULT '',
-    velocidadeReal TEXT DEFAULT '',
-    observacoes TEXT DEFAULT '',
-    salva INTEGER DEFAULT 1,
-    tempoRodando INTEGER DEFAULT 0,
-    tempoParada INTEGER DEFAULT 0,
-    criadaEm INTEGER DEFAULT (unixepoch() * 1000)
-  );
+async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS maquinas (
+      id TEXT PRIMARY KEY,
+      nome TEXT NOT NULL,
+      status TEXT DEFAULT 'parada',
+      "statusChangedAt" BIGINT DEFAULT 0,
+      "velocidadeProgramada" TEXT DEFAULT '',
+      "velocidadeReal" TEXT DEFAULT '',
+      observacoes TEXT DEFAULT '',
+      salva INTEGER DEFAULT 1,
+      "tempoRodando" INTEGER DEFAULT 0,
+      "tempoParada" INTEGER DEFAULT 0,
+      "criadaEm" BIGINT DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS timeline (
+      id SERIAL PRIMARY KEY,
+      "timestamp" BIGINT NOT NULL,
+      data TEXT NOT NULL,
+      snapshot TEXT NOT NULL
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS eventos (
+      id SERIAL PRIMARY KEY,
+      "maquinaId" TEXT NOT NULL,
+      "maquinaNome" TEXT NOT NULL,
+      status TEXT NOT NULL,
+      inicio BIGINT NOT NULL,
+      fim BIGINT,
+      observacao TEXT DEFAULT '',
+      "criadoEm" BIGINT DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)
+    )
+  `);
+}
 
-  CREATE TABLE IF NOT EXISTS timeline (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp INTEGER NOT NULL,
-    data TEXT NOT NULL,
-    snapshot TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS eventos (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    maquinaId TEXT NOT NULL,
-    maquinaNome TEXT NOT NULL,
-    status TEXT NOT NULL,
-    inicio INTEGER NOT NULL,
-    fim INTEGER,
-    observacao TEXT DEFAULT '',
-    criadoEm INTEGER DEFAULT (unixepoch() * 1000)
-  );
-`);
+initDB().catch(err => {
+  console.error('Database init failed:', err);
+  process.exit(1);
+});
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-app.get('/api/maquinas', (req, res) => {
+app.get('/api/maquinas', async (req, res) => {
   try {
-    const rows = db.prepare('SELECT * FROM maquinas ORDER BY criadaEm ASC').all();
-    res.json(rows.map(r => ({ ...r, salva: Boolean(r.salva) })));
+    const result = await pool.query('SELECT * FROM maquinas ORDER BY "criadaEm" ASC');
+    res.json(result.rows.map(r => ({ ...r, salva: Boolean(r.salva) })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/maquinas', (req, res) => {
+app.post('/api/maquinas', async (req, res) => {
   try {
     const { id, nome, status, statusChangedAt, velocidadeProgramada, velocidadeReal, observacoes, salva } = req.body;
-    const stmt = db.prepare(`
-      INSERT INTO maquinas (id, nome, status, statusChangedAt, velocidadeProgramada, velocidadeReal, observacoes, salva)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run(
+    await pool.query(`
+      INSERT INTO maquinas (id, nome, status, "statusChangedAt", "velocidadeProgramada", "velocidadeReal", observacoes, salva)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `, [
       id || Date.now().toString(36) + Math.random().toString(36).substring(2, 8),
       nome || 'Nova Máquina',
       status || 'parada',
@@ -73,38 +81,39 @@ app.post('/api/maquinas', (req, res) => {
       velocidadeReal || '',
       observacoes || '',
       salva !== undefined ? (salva ? 1 : 0) : 1
-    );
-    const rows = db.prepare('SELECT * FROM maquinas ORDER BY criadaEm ASC').all();
-    res.json(rows.map(r => ({ ...r, salva: Boolean(r.salva) })));
+    ]);
+    const result = await pool.query('SELECT * FROM maquinas ORDER BY "criadaEm" ASC');
+    res.json(result.rows.map(r => ({ ...r, salva: Boolean(r.salva) })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.put('/api/maquinas/:id', (req, res) => {
+app.put('/api/maquinas/:id', async (req, res) => {
   try {
     const { nome, status, statusChangedAt, velocidadeProgramada, velocidadeReal, observacoes, salva, tempoRodando, tempoParada } = req.body;
-    const updates = [];
+    const sets = [];
     const params = [];
+    let i = 1;
 
-    if (nome !== undefined) { updates.push('nome = ?'); params.push(nome); }
-    if (status !== undefined) { updates.push('status = ?'); params.push(status); }
-    if (statusChangedAt !== undefined) { updates.push('statusChangedAt = ?'); params.push(statusChangedAt); }
-    if (velocidadeProgramada !== undefined) { updates.push('velocidadeProgramada = ?'); params.push(velocidadeProgramada); }
-    if (velocidadeReal !== undefined) { updates.push('velocidadeReal = ?'); params.push(velocidadeReal); }
-    if (observacoes !== undefined) { updates.push('observacoes = ?'); params.push(observacoes); }
-    if (salva !== undefined) { updates.push('salva = ?'); params.push(salva ? 1 : 0); }
-    if (tempoRodando !== undefined) { updates.push('tempoRodando = ?'); params.push(tempoRodando); }
-    if (tempoParada !== undefined) { updates.push('tempoParada = ?'); params.push(tempoParada); }
+    if (nome !== undefined) { sets.push(`nome = $${i++}`); params.push(nome); }
+    if (status !== undefined) { sets.push(`status = $${i++}`); params.push(status); }
+    if (statusChangedAt !== undefined) { sets.push(`"statusChangedAt" = $${i++}`); params.push(statusChangedAt); }
+    if (velocidadeProgramada !== undefined) { sets.push(`"velocidadeProgramada" = $${i++}`); params.push(velocidadeProgramada); }
+    if (velocidadeReal !== undefined) { sets.push(`"velocidadeReal" = $${i++}`); params.push(velocidadeReal); }
+    if (observacoes !== undefined) { sets.push(`observacoes = $${i++}`); params.push(observacoes); }
+    if (salva !== undefined) { sets.push(`salva = $${i++}`); params.push(salva ? 1 : 0); }
+    if (tempoRodando !== undefined) { sets.push(`"tempoRodando" = $${i++}`); params.push(tempoRodando); }
+    if (tempoParada !== undefined) { sets.push(`"tempoParada" = $${i++}`); params.push(tempoParada); }
 
-    if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+    if (sets.length === 0) return res.status(400).json({ error: 'No fields to update' });
 
     params.push(req.params.id);
-    db.prepare(`UPDATE maquinas SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    await pool.query(`UPDATE maquinas SET ${sets.join(', ')} WHERE id = $${i}`, params);
 
-    const row = db.prepare('SELECT * FROM maquinas WHERE id = ?').get(req.params.id);
-    if (row) {
-      res.json({ ...row, salva: Boolean(row.salva) });
+    const result = await pool.query('SELECT * FROM maquinas WHERE id = $1', [req.params.id]);
+    if (result.rows[0]) {
+      res.json({ ...result.rows[0], salva: Boolean(result.rows[0].salva) });
     } else {
       res.status(404).json({ error: 'Machine not found' });
     }
@@ -113,50 +122,50 @@ app.put('/api/maquinas/:id', (req, res) => {
   }
 });
 
-app.delete('/api/maquinas/:id', (req, res) => {
+app.delete('/api/maquinas/:id', async (req, res) => {
   try {
-    db.prepare('DELETE FROM maquinas WHERE id = ?').run(req.params.id);
-    const rows = db.prepare('SELECT * FROM maquinas ORDER BY criadaEm ASC').all();
-    res.json(rows.map(r => ({ ...r, salva: Boolean(r.salva) })));
+    await pool.query('DELETE FROM maquinas WHERE id = $1', [req.params.id]);
+    const result = await pool.query('SELECT * FROM maquinas ORDER BY "criadaEm" ASC');
+    res.json(result.rows.map(r => ({ ...r, salva: Boolean(r.salva) })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.delete('/api/maquinas', (req, res) => {
+app.delete('/api/maquinas', async (req, res) => {
   try {
-    db.prepare('DELETE FROM maquinas').run();
+    await pool.query('DELETE FROM maquinas');
     res.json([]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/timeline', (req, res) => {
+app.get('/api/timeline', async (req, res) => {
   try {
-    const rows = db.prepare('SELECT * FROM timeline ORDER BY timestamp DESC LIMIT 50').all();
-    res.json(rows.map(r => ({ ...r, maquinas: JSON.parse(r.snapshot) })));
+    const result = await pool.query('SELECT * FROM timeline ORDER BY "timestamp" DESC LIMIT 50');
+    res.json(result.rows.map(r => ({ ...r, maquinas: JSON.parse(r.snapshot) })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/timeline', (req, res) => {
+app.post('/api/timeline', async (req, res) => {
   try {
     const { timestamp, data, maquinas } = req.body;
-    db.prepare('INSERT INTO timeline (timestamp, data, snapshot) VALUES (?, ?, ?)').run(
+    await pool.query('INSERT INTO timeline ("timestamp", data, snapshot) VALUES ($1, $2, $3)', [
       timestamp || Date.now(),
       data || new Date().toLocaleString('pt-BR'),
       JSON.stringify(maquinas || [])
-    );
-    const rows = db.prepare('SELECT * FROM timeline ORDER BY timestamp DESC LIMIT 50').all();
-    res.json(rows.map(r => ({ ...r, maquinas: JSON.parse(r.snapshot) })));
+    ]);
+    const result = await pool.query('SELECT * FROM timeline ORDER BY "timestamp" DESC LIMIT 50');
+    res.json(result.rows.map(r => ({ ...r, maquinas: JSON.parse(r.snapshot) })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/eventos', (req, res) => {
+app.get('/api/eventos', async (req, res) => {
   try {
     const { data } = req.query;
     let sql = 'SELECT * FROM eventos ORDER BY inicio DESC';
@@ -164,31 +173,33 @@ app.get('/api/eventos', (req, res) => {
     if (data) {
       const inicio = new Date(data + 'T00:00:00-03:00').getTime();
       const fim = inicio + 86400000;
-      sql = 'SELECT * FROM eventos WHERE inicio >= ? AND inicio < ? ORDER BY inicio DESC';
+      sql = 'SELECT * FROM eventos WHERE inicio >= $1 AND inicio < $2 ORDER BY inicio DESC';
       params.push(inicio, fim);
     }
-    const rows = db.prepare(sql).all(...params);
-    res.json(rows);
+    const result = await pool.query(sql, params);
+    res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/eventos', (req, res) => {
+app.post('/api/eventos', async (req, res) => {
   try {
     const { maquinaId, maquinaNome, status, inicio, fim, observacao } = req.body;
-    const stmt = db.prepare('INSERT INTO eventos (maquinaId, maquinaNome, status, inicio, fim, observacao) VALUES (?, ?, ?, ?, ?, ?)');
-    const info = stmt.run(maquinaId, maquinaNome, status, inicio, fim || null, observacao || '');
-    const row = db.prepare('SELECT * FROM eventos WHERE id = ?').get(info.lastInsertRowid);
-    res.json(row);
+    const result = await pool.query(`
+      INSERT INTO eventos ("maquinaId", "maquinaNome", status, inicio, fim, observacao)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING *
+    `, [maquinaId, maquinaNome, status, inicio, fim || null, observacao || '']);
+    res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.delete('/api/eventos/:id', (req, res) => {
+app.delete('/api/eventos/:id', async (req, res) => {
   try {
-    db.prepare('DELETE FROM eventos WHERE id = ?').run(req.params.id);
+    await pool.query('DELETE FROM eventos WHERE id = $1', [req.params.id]);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
