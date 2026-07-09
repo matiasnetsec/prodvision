@@ -1,7 +1,73 @@
 (function() {
   'use strict';
 
+  const TOKEN_KEY = 'prodvision_token';
   const API = '/api/maquinas';
+
+  function getToken() { return localStorage.getItem(TOKEN_KEY); }
+
+  function authHeaders() {
+    const t = getToken();
+    return t ? { 'Authorization': 'Bearer ' + t, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+  }
+
+  async function checkAuth() {
+    const t = getToken();
+    if (!t) return false;
+    try {
+      const res = await fetch('/api/check', { headers: { 'Authorization': 'Bearer ' + t } });
+      const data = await res.json();
+      return data.autenticado;
+    } catch { return false; }
+  }
+
+  const loginOverlay = document.getElementById('loginOverlay');
+  const loginUsername = document.getElementById('loginUsername');
+  const loginSenha = document.getElementById('loginSenha');
+  const btnLogin = document.getElementById('btnLogin');
+  const loginError = document.getElementById('loginError');
+
+  function getRole() { return localStorage.getItem('prodvision_role'); }
+
+  async function fazerLogin() {
+    const username = loginUsername.value.trim();
+    const senha = loginSenha.value;
+    if (!username) { loginError.textContent = 'Digite o usuário'; return; }
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, senha })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem(TOKEN_KEY, data.token);
+        localStorage.setItem('prodvision_role', data.role);
+        localStorage.setItem('prodvision_username', data.username);
+        loginOverlay.style.display = 'none';
+        initApp();
+      } else {
+        loginError.textContent = 'Usuário ou senha incorretos';
+        loginSenha.value = '';
+        loginSenha.focus();
+      }
+    } catch {
+      loginError.textContent = 'Erro ao conectar ao servidor';
+    }
+  }
+
+  btnLogin.addEventListener('click', fazerLogin);
+  loginSenha.addEventListener('keydown', function(e) { if (e.key === 'Enter') fazerLogin(); });
+  loginUsername.addEventListener('keydown', function(e) { if (e.key === 'Enter') loginSenha.focus(); });
+
+  function apiFetch(url, options) {
+    const t = getToken();
+    const opts = options || {};
+    opts.headers = opts.headers || {};
+    if (t) opts.headers['Authorization'] = 'Bearer ' + t;
+    return fetch(url, opts);
+  }
+
   let maquinas = [];
   let nomeCount = 0;
 
@@ -34,7 +100,7 @@
 
   async function carregarMaquinas() {
     try {
-      const res = await fetch(API);
+      const res = await apiFetch(API);
       if (res.ok) {
         maquinas = await res.json();
         nomeCount = maquinas.length;
@@ -49,7 +115,7 @@
 
   async function salvarMaquinaServer(id, dados) {
     try {
-      await fetch(`${API}/${id}`, {
+      await apiFetch(`${API}/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(dados)
@@ -61,7 +127,7 @@
 
   async function criarMaquinaServer(maq) {
     try {
-      await fetch(API, {
+      await apiFetch(API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(maq)
@@ -74,7 +140,7 @@
 
   async function deletarMaquinaServer(id) {
     try {
-      const res = await fetch(`${API}/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API}/${id}`, { method: 'DELETE' });
       if (res.ok) {
         maquinas = await res.json();
         renderizar();
@@ -86,7 +152,7 @@
 
   async function limparMaquinasServer() {
     try {
-      const res = await fetch(API, { method: 'DELETE' });
+      const res = await apiFetch(API, { method: 'DELETE' });
       if (res.ok) {
         maquinas = await res.json();
         renderizar();
@@ -139,6 +205,9 @@
     }
     emptyState.style.display = 'none';
 
+    var role = getRole();
+    var podeGerenciar = role === 'dev' || role === 'admin';
+
     maquinas.forEach(function(maq, index) {
       if (maq.salva === undefined) maq.salva = true;
 
@@ -156,9 +225,7 @@
               <button class="status-btn-sm ${maq.status === 'setup' ? 'active-setup' : ''}" data-status="setup" data-index="${index}" title="Setup">&#9881;</button>
               <button class="status-btn-sm ${maq.status === 'manutencao' ? 'active-manutencao' : ''}" data-status="manutencao" data-index="${index}" title="Manutenção">&#9889;</button>
             </div>
-            <button class="btn-delete" data-index="${index}" title="Remover">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-            </button>
+            ${podeGerenciar ? '<button class="btn-delete" data-index="' + index + '" title="Remover"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>' : ''}
           </div>
           <div class="list-row-fields">
             <div class="field-group-sm">
@@ -322,7 +389,7 @@
   });
 
   btnRelatorio.addEventListener('click', async function() {
-    var res = await fetch(API);
+    var res = await apiFetch(API);
     var lista = await res.json();
     var salvas = lista.filter(function(m) { return m.salva; });
     if (salvas.length === 0) {
@@ -355,7 +422,7 @@
     });
 
     try {
-      await fetch('/api/timeline', {
+      await apiFetch('/api/timeline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ timestamp: Date.now(), data: dataStr, maquinas: snapshot })
@@ -372,8 +439,6 @@
       document.execCommand('copy');
       document.body.removeChild(ta);
     });
-
-    alert('Relatório copiado para a área de transferência!');
   });
 
   var logMaquina = document.getElementById('logMaquina');
@@ -382,7 +447,6 @@
   var logHoraFim = document.getElementById('logHoraFim');
   var logObservacao = document.getElementById('logObservacao');
   var btnLogSalvar = document.getElementById('btnLogSalvar');
-  var logLista = document.getElementById('logLista');
 
   function agoraLocal() {
     var d = new Date();
@@ -397,33 +461,6 @@
       opt.textContent = m.nome;
       logMaquina.appendChild(opt);
     });
-  }
-
-  async function carregarEventos() {
-    try {
-      var res = await fetch('/api/eventos');
-      var lista = await res.json();
-      logLista.innerHTML = '';
-      lista.forEach(function(ev) {
-        var item = document.createElement('div');
-        item.className = 'log-item';
-        var sLabel = { rodando: 'Rodando', parada: 'Parada', setup: 'Setup', manutencao: 'Manutenção' };
-        var sIcon = { rodando: '&#9654;', parada: '&#9632;', setup: '&#9881;', manutencao: '&#9889;' };
-        var inicio = new Date(ev.inicio).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-        var fim = ev.fim ? new Date(ev.fim).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '--:--';
-        var sClass = ev.status === 'rodando' ? 's-rodando' : (ev.status === 'parada' ? 's-parada' : (ev.status === 'setup' ? 's-setup' : 's-manutencao'));
-        item.innerHTML = '<div class="log-item-header"><span class="log-item-maq">' + esc(ev.maquinaNome) + '</span><span class="log-item-status ' + sClass + '">' + sIcon[ev.status] + ' ' + (sLabel[ev.status] || ev.status) + '</span><button class="log-item-del" data-id="' + ev.id + '">&#10005;</button></div><div class="log-item-time">' + inicio + ' - ' + fim + '</div>' + (ev.observacao ? '<div class="log-item-obs">' + esc(ev.observacao) + '</div>' : '');
-        logLista.prepend(item);
-      });
-      logLista.querySelectorAll('.log-item-del').forEach(function(btn) {
-        btn.addEventListener('click', async function() {
-          if (confirm('Remover este evento?')) {
-            await fetch('/api/eventos/' + this.dataset.id, { method: 'DELETE' });
-            carregarEventos();
-          }
-        });
-      });
-    } catch (e) {}
   }
 
   logHoraInicio.value = agoraLocal();
@@ -447,7 +484,7 @@
     var fim = logHoraFim.value ? timeToMs(logHoraFim.value) : null;
 
     try {
-      await fetch('/api/eventos', {
+      await apiFetch('/api/eventos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -463,7 +500,6 @@
       logHoraFim.value = '';
       logObservacao.value = '';
       logHoraInicio.value = agoraLocal();
-      carregarEventos();
     } catch (e) {
       alert('Erro ao salvar evento.');
     }
@@ -477,11 +513,80 @@
         clearInterval(checkLoaded);
         setTimeout(function() {
           carregarLogSelect();
-          carregarEventos();
         }, 100);
       }
     }, 200);
   };
 
-  carregarMaquinas();
+  const btnLogout = document.createElement('button');
+  btnLogout.className = 'btn-icon';
+  btnLogout.title = 'Sair';
+  btnLogout.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>';
+  btnLogout.addEventListener('click', function() {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem('prodvision_role');
+    localStorage.removeItem('prodvision_username');
+    location.reload();
+  });
+  document.querySelector('.appbar-content').appendChild(btnLogout);
+
+  var btnGerenciarUsuarios = null;
+
+  function abrirGerenciarUsuarios() {
+    window.location.href = 'usuarios.html';
+  }
+
+  var profileBadge = null;
+
+  function aplicarPermissoes() {
+    const role = getRole();
+    const username = localStorage.getItem('prodvision_username') || '';
+    const podeGerenciar = role === 'dev' || role === 'admin';
+    const mostrarCargo = role === 'dev' || role === 'admin';
+    fab.style.display = podeGerenciar ? 'flex' : 'none';
+    btnLimpar.style.display = podeGerenciar ? 'flex' : 'none';
+
+    var appbar = document.querySelector('.appbar-content');
+
+    if (mostrarCargo && !profileBadge) {
+      profileBadge = document.createElement('div');
+      profileBadge.className = 'profile-badge';
+      var labels = { dev: 'Desenvolvedor', admin: 'Administrador' };
+      profileBadge.innerHTML = '<span class="profile-name">' + username + '</span><span class="profile-role ' + role + '">' + (labels[role] || role) + '</span>';
+      appbar.insertBefore(profileBadge, btnLogout);
+    }
+
+    if (role === 'dev') {
+      var btnDev = document.createElement('button');
+      btnDev.className = 'btn-icon';
+      btnDev.title = 'Painel do Desenvolvedor';
+      btnDev.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>';
+      btnDev.addEventListener('click', function() { window.location.href = 'dev.html'; });
+      appbar.insertBefore(btnDev, btnLogout);
+    }
+
+    if ((role === 'dev' || role === 'admin') && !btnGerenciarUsuarios) {
+      btnGerenciarUsuarios = document.createElement('button');
+      btnGerenciarUsuarios.className = 'btn-icon';
+      btnGerenciarUsuarios.title = 'Gerenciar Usuários';
+      btnGerenciarUsuarios.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>';
+      btnGerenciarUsuarios.addEventListener('click', abrirGerenciarUsuarios);
+      appbar.insertBefore(btnGerenciarUsuarios, btnLogout);
+    }
+  }
+
+  function initApp() {
+    aplicarPermissoes();
+    carregarMaquinas();
+  }
+
+  (async function() {
+    var ok = await checkAuth();
+    if (ok) {
+      loginOverlay.style.display = 'none';
+      initApp();
+    } else {
+      loginSenha.focus();
+    }
+  })();
 })();

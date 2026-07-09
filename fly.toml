@@ -1,0 +1,28 @@
+app = "prodvision-white-harborwave-4684"
+primary_region = "gru"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[mounts]
+  source = "prodvision_data"
+  destination = "/app/data"
+
+[[services]]
+  port = 5500
+  protocol = "tcp"
+  internal_port = 5500
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20

@@ -9,6 +9,27 @@
   var content = document.getElementById('relatoriosContent');
   var btnVoltar = document.getElementById('btnVoltar');
 
+  function getToken() { return localStorage.getItem('prodvision_token'); }
+
+  function apiFetch(url, options) {
+    var t = getToken();
+    var opts = options || {};
+    opts.headers = opts.headers || {};
+    if (t) opts.headers['Authorization'] = 'Bearer ' + t;
+    return fetch(url, opts);
+  }
+
+  async function checkAuth() {
+    var t = getToken();
+    if (!t) { window.location.href = 'index.html'; return false; }
+    try {
+      var res = await fetch('/api/check', { headers: { 'Authorization': 'Bearer ' + t } });
+      var data = await res.json();
+      if (!data.autenticado) { window.location.href = 'index.html'; return false; }
+      return data;
+    } catch { window.location.href = 'index.html'; return false; }
+  }
+
   function esc(t) {
     if (typeof t !== 'string') return '';
     var d = document.createElement('div');
@@ -38,11 +59,22 @@
     return ts >= inicio && ts < fim;
   }
 
+  async function deletarTimeline(id) {
+    if (!confirm('Remover este registro da timeline?')) return;
+    try {
+      await apiFetch('/api/timeline/' + id, { method: 'DELETE' });
+      await carregarDados();
+      renderTimeline();
+    } catch (e) {
+      alert('Erro ao remover');
+    }
+  }
+
   async function carregarDados() {
     try {
       var [r1, r2] = await Promise.all([
-        fetch('/api/timeline'),
-        fetch('/api/eventos')
+        apiFetch('/api/timeline'),
+        apiFetch('/api/eventos')
       ]);
       if (r1.ok) timelineEntries = await r1.json();
       if (r2.ok) eventos = await r2.json();
@@ -52,8 +84,37 @@
     }
   }
 
+  function exportarExcel() {
+    var role = localStorage.getItem('prodvision_role');
+    var t = getToken();
+    if (!t) return;
+    if (role !== 'dev') {
+      alert('Exportação Excel em desenvolvimento. Disponível apenas para o Desenvolvedor.');
+      return;
+    }
+    var a = document.createElement('a');
+    a.href = '/api/export';
+    a.download = 'prodvision_relatorio.xlsx';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    fetch('/api/export', { headers: { 'Authorization': 'Bearer ' + t } }).then(function(res) {
+      return res.blob();
+    }).then(function(blob) {
+      var url = URL.createObjectURL(blob);
+      a.href = url;
+      a.click();
+      URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    });
+  }
+
   function renderTimeline() {
     var html = '';
+
+    html += '<button id="btnExportar" class="btn-enviar" style="margin-bottom:16px">';
+    html += '  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:8px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+    html += '  Exportar Relatório Excel';
+    html += '</button>';
 
     html += '<div class="rel-timeline-toggle" id="timelineToggle">';
     html += '  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:8px"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
@@ -85,6 +146,10 @@
             html += '  <div class="tl-item">';
             html += '    <div class="tl-dot"></div>';
             html += '    <div class="tl-data">' + esc(entry.data) + '</div>';
+            if (entry.usuario) {
+              html += '    <div style="font-size:10px;color:var(--text3);margin-left:8px">' + esc(entry.usuario) + ' (' + esc(entry.cargo) + ')</div>';
+            }
+            html += '    <button class="tl-delete" data-id="' + entry.id + '" title="Remover">&#10005;</button>';
             html += '  </div>';
             if (entry.maquinas && entry.maquinas.length > 0) {
               html += '  <div class="tl-mags">';
@@ -166,11 +231,29 @@
         renderTimeline();
       });
     }
+
+    var btnExport = document.getElementById('btnExportar');
+    if (btnExport) {
+      btnExport.addEventListener('click', exportarExcel);
+    }
+
+    content.querySelectorAll('.tl-delete').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        deletarTimeline(this.dataset.id);
+      });
+    });
   }
 
   btnVoltar.addEventListener('click', function() {
     window.location.href = 'index.html';
   });
 
-  carregarDados().then(renderTimeline);
+  (async function() {
+    var auth = await checkAuth();
+    if (auth) {
+      await carregarDados();
+      renderTimeline();
+    }
+  })();
 })();
